@@ -1,0 +1,40 @@
+{
+  "name": "claude-sessions",
+  "displayName": "Claude Sessions",
+  "description": "Lists the running Claude Code chats in Claude's side bar: click to switch, × to stop, + for a new chat.",
+  "version": "0.2.0",
+  "publisher": "local",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "views": {
+      "claude-sidebar-secondary": [
+        {
+          "id": "claudeSessions.list",
+          "name": "Sessions"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "claudeSessions.open", "title": "Show Claude Session" },
+      { "command": "claudeSessions.close", "title": "Stop Claude Session", "icon": "$(close)" },
+      { "command": "claudeSessions.new", "title": "New Claude Chat", "icon": "$(add)" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "claudeSessions.new", "when": "view == claudeSessions.list", "group": "navigation" }
+      ],
+      "view/item/context": [
+        { "command": "claudeSessions.close", "when": "view == claudeSessions.list && viewItem == session", "group": "inline" }
+      ],
+      "commandPalette": [
+        { "command": "claudeSessions.open", "when": "false" },
+        { "command": "claudeSessions.close", "when": "false" }
+      ]
+    }
+  }
+}
