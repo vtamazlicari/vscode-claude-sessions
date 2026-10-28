@@ -30,8 +30,14 @@ function readRunningSessions() {
     .sort((a, b) => a.startedAt - b.startedAt);
 }
 
+function toTranscriptPath(session) {
+  return path.join(CLAUDE_DIR, 'projects', session.cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${session.sessionId}.jsonl`);
+}
+
+const hasMessages = (session) => fs.existsSync(toTranscriptPath(session));
+
 function findTitle(session) {
-  const transcript = path.join(CLAUDE_DIR, 'projects', session.cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${session.sessionId}.jsonl`);
+  const transcript = toTranscriptPath(session);
   if (!fs.existsSync(transcript)) return 'New chat';
   let title = session.name;
   for (const line of fs.readFileSync(transcript, 'utf8').split('\n')) {
@@ -101,6 +107,12 @@ function findShownSessionId(logDir, sessions) {
   return sessions.find((s) => s.startedAt >= launch.at && s.startedAt - launch.at < 5000)?.sessionId;
 }
 
+function findNeighbour(sessions, closing) {
+  const index = sessions.findIndex((s) => s.sessionId === closing.sessionId);
+  const before = sessions.slice(0, index).filter(hasMessages).pop();
+  return before ?? sessions.slice(index + 1).find(hasMessages);
+}
+
 function showInSidebar(sessionId) {
   return vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, undefined, undefined, undefined, {
     programmatic: 'honor-preferred-location',
@@ -125,7 +137,9 @@ function activate(context) {
     vscode.commands.registerCommand('claudeSessions.close', async (session) => {
       const shownSessionId = findShownSessionId(claudeLogDir, provider.sessions);
       if (shownSessionId === undefined || shownSessionId === session.sessionId) {
-        await vscode.commands.executeCommand('claude-vscode.newConversation');
+        const neighbour = findNeighbour(provider.sessions, session);
+        if (neighbour) await showInSidebar(neighbour.sessionId);
+        else await vscode.commands.executeCommand('claude-vscode.newConversation');
         await delay(1000);
       }
       try {
