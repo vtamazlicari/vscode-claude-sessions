@@ -3,9 +3,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { StringDecoder } = require('string_decoder');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const SESSIONS_DIR = path.join(CLAUDE_DIR, 'sessions');
+const CURRENT_LOG = 'Claude VSCode.log';
+const PREVIOUS_LOG = 'Claude VSCode.1.log';
 
 function isOwnLiveProcess(pid) {
   try {
@@ -64,6 +67,10 @@ class SessionsProvider {
     return this.sessions;
   }
 
+  getParent() {
+    return undefined;
+  }
+
   getTreeItem(session) {
     const title = findTitle(session);
     const item = new vscode.TreeItem(title);
@@ -77,35 +84,67 @@ class SessionsProvider {
   }
 }
 
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function findShownSessionId(logDir, sessions) {
-  const text = ['Claude VSCode.1.log', 'Claude VSCode.log']
-    .map((file) => path.join(logDir, file))
-    .filter((file) => fs.existsSync(file))
-    .map((file) => fs.readFileSync(file, 'utf8'))
-    .join('\n');
-  const launches = new Map();
-  let lastLaunched;
-  let shownChannel;
-  for (const line of text.split('\n')) {
-    const launch = line.match(/^(\S+ \S+) \[info\] Launching Claude on channel: (\S+)/);
-    if (launch) {
-      lastLaunched = { at: new Date(launch[1].replace(' ', 'T')).getTime() };
-      launches.set(launch[2], lastLaunched);
-      continue;
-    }
-    const resume = line.match(/\[info\] Spawning Claude .*resume: (\S+)/);
-    if (resume && lastLaunched) lastLaunched.resume = resume[1];
-    const ui = line.match(/"channelId":"([^"]+)".*"request":\{"type":"engine_ui_(attach|detach)"/);
-    if (ui && ui[2] === 'attach') shownChannel = ui[1];
-    if (ui && ui[2] === 'detach' && shownChannel === ui[1]) shownChannel = undefined;
+class ShownSessionTracker {
+  constructor(logDir) {
+    this.logDir = logDir;
+    this.readAll();
   }
-  const launch = launches.get(shownChannel);
-  if (!launch) return undefined;
-  if (launch.resume) return sessions.find((s) => s.sessionId.startsWith(launch.resume))?.sessionId;
-  return sessions.find((s) => s.startedAt >= launch.at && s.startedAt - launch.at < 5000)?.sessionId;
+
+  readAll() {
+    this.launches = new Map();
+    this.shownChannel = undefined;
+    this.offset = 0;
+    this.decoder = new StringDecoder('utf8');
+    this.rest = '';
+    const previous = path.join(this.logDir, PREVIOUS_LOG);
+    if (fs.existsSync(previous)) this.feed(`${fs.readFileSync(previous, 'utf8')}\n`);
+    this.readNew();
+  }
+
+  readNew() {
+    const file = path.join(this.logDir, CURRENT_LOG);
+    if (!fs.existsSync(file)) return;
+    const size = fs.statSync(file).size;
+    if (size < this.offset) return this.readAll();
+    if (size === this.offset) return;
+    const buffer = Buffer.alloc(size - this.offset);
+    const fd = fs.openSync(file, 'r');
+    try {
+      fs.readSync(fd, buffer, 0, buffer.length, this.offset);
+    } finally {
+      fs.closeSync(fd);
+    }
+    this.offset = size;
+    this.feed(this.decoder.write(buffer));
+  }
+
+  feed(text) {
+    const lines = (this.rest + text).split('\n');
+    this.rest = lines.pop();
+    for (const line of lines) {
+      const launch = line.match(/^(\S+ \S+) \[info\] Launching Claude on channel: (\S+)/);
+      if (launch) {
+        this.launches.set(launch[2], new Date(launch[1].replace(' ', 'T')).getTime());
+        continue;
+      }
+      const ui = line.match(/"channelId":"([^"]+)".*"request":\{"type":"engine_ui_(attach|detach)"/);
+      if (ui && ui[2] === 'attach') this.shownChannel = ui[1];
+      if (ui && ui[2] === 'detach' && this.shownChannel === ui[1]) this.shownChannel = undefined;
+    }
+  }
+
+  findShownSessionId(sessions) {
+    const launchedAt = this.launches.get(this.shownChannel);
+    if (launchedAt === undefined) return undefined;
+    const toProcessStart = (s) => (s.procStart ? Date.parse(`${s.procStart} UTC`) : s.startedAt);
+    return sessions
+      .map((s) => ({ sessionId: s.sessionId, gap: Math.abs(toProcessStart(s) - launchedAt) }))
+      .filter((match) => match.gap < 3000)
+      .sort((a, b) => a.gap - b.gap)[0]?.sessionId;
+  }
 }
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function findNeighbour(sessions, closing) {
   const index = sessions.findIndex((s) => s.sessionId === closing.sessionId);
@@ -119,23 +158,49 @@ function showInSidebar(sessionId) {
   });
 }
 
+function watchDebounced(dir, onChange, filename) {
+  let timer;
+  const watcher = fs.watch(dir, (_event, changed) => {
+    if (filename && changed !== filename) return;
+    clearTimeout(timer);
+    timer = setTimeout(onChange, 300);
+  });
+  return { dispose: () => watcher.close() };
+}
+
 function activate(context) {
   const provider = new SessionsProvider();
+  const treeView = vscode.window.createTreeView('claudeSessions.list', { treeDataProvider: provider });
   const claudeLogDir = path.join(path.dirname(context.logUri.fsPath), 'Anthropic.claude-code');
+  const tracker = new ShownSessionTracker(claudeLogDir);
+  let highlightedSessionId;
 
-  let debounce;
-  const watcher = fs.watch(SESSIONS_DIR, () => {
-    clearTimeout(debounce);
-    debounce = setTimeout(() => provider.refresh(), 300);
-  });
+  const highlightShown = () => {
+    if (!treeView.visible) return;
+    tracker.readNew();
+    const sessions = readRunningSessions();
+    const shown = sessions.find((s) => s.sessionId === tracker.findShownSessionId(sessions));
+    if (!shown || shown.sessionId === highlightedSessionId) return;
+    highlightedSessionId = shown.sessionId;
+    treeView.reveal(shown, { select: true, focus: false }).then(undefined, () => {});
+  };
+
+  const refreshAndHighlight = () => {
+    highlightedSessionId = undefined;
+    provider.refresh();
+    highlightShown();
+  };
 
   context.subscriptions.push(
-    { dispose: () => watcher.close() },
-    vscode.window.registerTreeDataProvider('claudeSessions.list', provider),
+    treeView,
+    watchDebounced(SESSIONS_DIR, refreshAndHighlight),
+    watchDebounced(claudeLogDir, highlightShown, CURRENT_LOG),
+    treeView.onDidChangeVisibility(refreshAndHighlight),
     vscode.commands.registerCommand('claudeSessions.open', (session) => showInSidebar(session.sessionId)),
     vscode.commands.registerCommand('claudeSessions.new', () => vscode.commands.executeCommand('claude-vscode.newConversation')),
     vscode.commands.registerCommand('claudeSessions.close', async (session) => {
-      const shownSessionId = findShownSessionId(claudeLogDir, provider.sessions);
+      tracker.readNew();
+      const shownSessionId = tracker.findShownSessionId(provider.sessions);
       if (shownSessionId === undefined || shownSessionId === session.sessionId) {
         const neighbour = findNeighbour(provider.sessions, session);
         if (neighbour) await showInSidebar(neighbour.sessionId);
@@ -147,6 +212,7 @@ function activate(context) {
       } catch {}
     }),
   );
+  highlightShown();
 }
 
 module.exports = { activate };
