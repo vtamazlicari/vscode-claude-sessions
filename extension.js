@@ -185,6 +185,12 @@ function activate(context) {
     treeView.reveal(shown, { select: true, focus: false }).then(undefined, () => {});
   };
 
+  const reselectWhenCleared = ({ selection }) => {
+    if (selection.length > 0 || !highlightedSessionId) return;
+    const shown = provider.sessions.find((s) => s.sessionId === highlightedSessionId);
+    if (shown) treeView.reveal(shown, { select: true, focus: false }).then(undefined, () => {});
+  };
+
   const refreshAndHighlight = () => {
     highlightedSessionId = undefined;
     provider.refresh();
@@ -196,6 +202,7 @@ function activate(context) {
     watchDebounced(SESSIONS_DIR, refreshAndHighlight),
     watchDebounced(claudeLogDir, highlightShown, CURRENT_LOG),
     treeView.onDidChangeVisibility(refreshAndHighlight),
+    treeView.onDidChangeSelection(reselectWhenCleared),
     vscode.commands.registerCommand('claudeSessions.open', (session) => showInSidebar(session.sessionId)),
     vscode.commands.registerCommand('claudeSessions.new', () => vscode.commands.executeCommand('claude-vscode.newConversation')),
     vscode.commands.registerCommand('claudeSessions.close', async (session) => {

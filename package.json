@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Lists the running Claude Code chats in Claude's side bar: click to switch, × to stop, + for a new chat.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "local",
   "license": "UNLICENSED",
   "engines": {
