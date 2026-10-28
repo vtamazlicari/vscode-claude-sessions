@@ -22,4 +22,5 @@ npx @vscode/vsce package --allow-missing-repository --skip-license -o claude-ses
 ## How it works
 
 - Running chats come from `~/.claude/sessions/<pid>.json`, filtered to processes started by this window's extension host.
-- × on the chat on screen switches to a new chat first, because Claude shows an error on a chat whose process exits non-zero. Which chat is on screen is read from Claude's own log (`engine_ui_attach` / `engine_ui_detach`), so a Claude update may break it; it then falls back to always switching first.
+- × on the chat on screen first switches to the previous chat in the list that has messages, else the next one, else a new chat, because Claude shows an error on a chat whose process exits non-zero. Empty chats are skipped: Claude replaces them with a new chat when asked to show them.
+- Which chat is on screen is read from Claude's own log (`engine_ui_attach` / `engine_ui_detach`), so a Claude update may break it; it then falls back to always switching first.
