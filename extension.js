@@ -158,14 +158,28 @@ function showInSidebar(sessionId) {
   });
 }
 
+// Claude creates its log folder after this extension may activate, so wait for a missing folder instead of throwing.
 function watchDebounced(dir, onChange, filename) {
   let timer;
-  const watcher = fs.watch(dir, (_event, changed) => {
-    if (filename && changed !== filename) return;
-    clearTimeout(timer);
-    timer = setTimeout(onChange, 300);
-  });
-  return { dispose: () => watcher.close() };
+  let watcher;
+  const start = () => {
+    if (!fs.existsSync(dir)) return;
+    clearInterval(poll);
+    watcher = fs.watch(dir, (_event, changed) => {
+      if (filename && changed !== filename) return;
+      clearTimeout(timer);
+      timer = setTimeout(onChange, 300);
+    });
+  };
+  const poll = setInterval(start, 1000);
+  start();
+  return {
+    dispose: () => {
+      clearInterval(poll);
+      clearTimeout(timer);
+      watcher?.close();
+    },
+  };
 }
 
 function activate(context) {
